@@ -24,7 +24,14 @@ classifiers = [
 dependencies = [
     "SQLAlchemy~=2.0.0",
     "img2table~=1.4.0",
-    "PaddleOCR~=2.7.0",
+    "paddlepaddle>=2.6.0",
+    "paddleocr>=2.8.0",
+    "Pillow>=12.0.0",
+    "opencv-python>=4.12.0",
+    "pdf2image>=1.17.0",
+    "python-docx>=1.2.0",
+    "docx2pdf>=0.1.8",
+    "numpy",
 ]
 
 [project.optional-dependencies]
