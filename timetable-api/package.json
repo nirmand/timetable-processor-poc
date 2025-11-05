@@ -1,0 +1,33 @@
+{
+  "name": "timetable-api",
+  "version": "1.0.0",
+  "description": "API server for timetable processing",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node dist/index.js",
+    "dev": "node --watch dist/index.js",
+    "build": "tsc"
+  },
+  "keywords": [
+    "timetable",
+    "scheduler",
+    "api",
+    "express"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  }
+}
