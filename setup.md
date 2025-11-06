@@ -48,6 +48,27 @@ A Node.js/Express API server for timetable processing.
    ```bash
    npm run start
    ```
+
+## 3. Database Setup
+
+The application uses SQLite for data storage. The database will be automatically created in the `db` directory when needed.
+
+### Prerequisites
+- No additional prerequisites - SQLite is embedded and managed by the application
+
+### Database Location
+- The database file will be created at: `db/timetable.sqlite`
+- The schema includes two tables:
+  - `timetable_sources`: Stores metadata about uploaded timetables
+  - `extracted_activities`: Stores the extracted timetable entries
+
+### Automatic Setup
+The database and its tables are automatically created when:
+1. The API server starts up, or
+2. The first timetable is processed
+
+No manual database setup is required. Just ensure the `db` directory exists in the project root:
+
 The API will be available at `http://localhost:3000`
 
 ## 3. Processor Engine (Python)
