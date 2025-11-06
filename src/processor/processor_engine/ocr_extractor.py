@@ -53,60 +53,109 @@ class OCRExtractor:
             
             # Run OCR (expects BGR format from OpenCV)
             result = self.ocr.ocr(image)
-            
-            if not result or not result[0]:
+
+            if not result:
                 print("    Warning: PaddleOCR returned no results")
                 return []
-            
-            # Parse results
+
             extracted_data = []
-            for line in result[0]:
-                try:
-                    # Validate line structure
-                    if not line or len(line) < 2:
+
+            # PaddleOCR has had API changes: older versions return a list of
+            # (bbox, (text, confidence)) tuples. Newer pipeline returns a single
+            # dict inside a list with keys like 'rec_texts', 'rec_polys',
+            # 'rec_scores' or 'rec_boxes'. Handle both.
+            first = result[0]
+
+            # New-style output (dict) from newer PaddleOCR versions
+            if isinstance(first, dict) and ('rec_texts' in first or 'rec_texts' in first):
+                rec_texts = first.get('rec_texts', [])
+                rec_scores = first.get('rec_scores', [])
+                rec_polys = first.get('rec_polys', None) or first.get('rec_boxes', None)
+
+                h, w = image.shape[:2]
+
+                for idx, text in enumerate(rec_texts):
+                    try:
+                        text = str(text).strip()
+                        if not text:
+                            continue
+
+                        confidence = float(rec_scores[idx]) if idx < len(rec_scores) else 0.0
+
+                        # rec_polys is usually a list/array of 4 points
+                        bbox = None
+                        if rec_polys is not None and idx < len(rec_polys):
+                            poly = rec_polys[idx]
+                            # Convert ndarray to list of [x,y]
+                            try:
+                                bbox = [[int(p[0]), int(p[1])] for p in poly]
+                            except Exception:
+                                # rec_boxes may be Nx4 array; convert to rectangle
+                                try:
+                                    x1, y1, x2, y2 = map(int, rec_polys[idx])
+                                    bbox = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+                                except Exception:
+                                    bbox = None
+
+                        # If no bbox, skip spatial calculations but still include text
+                        if bbox and len(bbox) >= 4:
+                            center_x = sum(p[0] for p in bbox) / 4
+                            center_y = sum(p[1] for p in bbox) / 4
+                            norm_x = center_x / w
+                            norm_y = center_y / h
+                        else:
+                            center_x = center_y = norm_x = norm_y = 0.0
+
+                        extracted_data.append({
+                            'text': text,
+                            'bbox': bbox,
+                            'confidence': confidence,
+                            'position': (norm_x, norm_y),
+                            'center': (center_x, center_y),
+                        })
+
+                    except Exception as e:
+                        print(f"    Warning: skipping OCR item due to error: {e}")
                         continue
-                    
-                    bbox = line[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                    text_info = line[1]  # (text, confidence)
-                    
-                    # Validate text_info structure
-                    if not text_info or len(text_info) < 2:
+
+            else:
+                # Older-style output: list of [ [box], (text, score) ]
+                for line in first if isinstance(first, list) else result:
+                    try:
+                        if not line or len(line) < 2:
+                            continue
+
+                        bbox = line[0]
+                        text_info = line[1]
+                        if not text_info or len(text_info) < 2:
+                            continue
+
+                        text = str(text_info[0]).strip() if text_info[0] else ""
+                        if not text:
+                            continue
+
+                        confidence = float(text_info[1])
+
+                        if not bbox or len(bbox) < 4:
+                            continue
+
+                        center_x = sum(point[0] for point in bbox) / 4
+                        center_y = sum(point[1] for point in bbox) / 4
+                        h, w = image.shape[:2]
+                        norm_x = center_x / w
+                        norm_y = center_y / h
+
+                        extracted_data.append({
+                            'text': text,
+                            'bbox': bbox,
+                            'confidence': confidence,
+                            'position': (norm_x, norm_y),
+                            'center': (center_x, center_y),
+                        })
+
+                    except (IndexError, ValueError, TypeError) as line_error:
+                        print(f"    Warning: Skipping malformed OCR result: {line_error}")
                         continue
-                    
-                    # Safely extract text and confidence
-                    text = str(text_info[0]).strip() if text_info[0] else ""
-                    
-                    # Skip empty text
-                    if not text:
-                        continue
-                    
-                    confidence = float(text_info[1])
-                    
-                    # Validate bbox structure
-                    if not bbox or len(bbox) < 4:
-                        continue
-                    
-                    # Calculate center position for spatial analysis
-                    center_x = sum(point[0] for point in bbox) / 4
-                    center_y = sum(point[1] for point in bbox) / 4
-                    
-                    # Normalize position (0-1 range)
-                    h, w = image.shape[:2]
-                    norm_x = center_x / w
-                    norm_y = center_y / h
-                    
-                    extracted_data.append({
-                        'text': text,
-                        'bbox': bbox,
-                        'confidence': confidence,
-                        'position': (norm_x, norm_y),
-                        'center': (center_x, center_y),
-                    })
-                    
-                except (IndexError, ValueError, TypeError) as line_error:
-                    # Skip malformed lines but continue processing others
-                    print(f"    Warning: Skipping malformed OCR result: {line_error}")
-                    continue
             
             # Sort by vertical position (top to bottom), then horizontal (left to right)
             extracted_data.sort(key=lambda x: (x['center'][1], x['center'][0]))

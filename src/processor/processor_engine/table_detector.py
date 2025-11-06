@@ -37,26 +37,24 @@ class TableDetector:
                 - content: Extracted table content as list of rows
                 - title: Table title if detected
         """
+        import tempfile
+        import cv2
+        import os
+
+        # Prepare PIL image from numpy input (img2table expects a file path)
+        if isinstance(image, np.ndarray):
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(image_rgb)
+        else:
+            pil_image = image
+
+        # Write to a temporary file, use it for img2table, then clean up
+        tmp_path = None
         try:
-            import tempfile
-            import cv2
-            
-            if isinstance(image, np.ndarray):
-                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                pil_image = Image.fromarray(image_rgb)
-            else:
-                pil_image = image
-            
-            # img2table requires a file path, not a PIL Image
             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
                 tmp_path = tmp.name
             pil_image.save(tmp_path)
-        finally:
-            # Clean up temporary file
-            import os
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        try:
+
             doc = Img2TableImage(tmp_path)
             
             # Extract tables
@@ -83,10 +81,24 @@ class TableDetector:
             return extracted_tables
         
         except Exception as e:
-            print(f"Error during table detection: {e}")
-            import traceback
-            traceback.print_exc()
+            # Provide a clearer message for common OpenCV ximgproc issues
+            msg = str(e)
+            if isinstance(e, AttributeError) and 'ximgproc' in msg:
+                print("Error during table detection: OpenCV ximgproc functions are unavailable.")
+                print("This commonly occurs when 'opencv-contrib-python' is not installed or the installed OpenCV build lacks ximgproc.")
+                print("Suggestion: install opencv-contrib-python in the venv, e.g. 'pip install opencv-contrib-python' and retry.")
+            else:
+                print(f"Error during table detection: {e}")
+                import traceback
+                traceback.print_exc()
             return []
+        finally:
+            # Ensure temporary file is removed
+            try:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
     
     def _extract_table_content(self, table) -> List[List[str]]:
         """
