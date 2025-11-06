@@ -14,6 +14,10 @@ from processor_engine import (
     is_supported_file
 )
 from processor_engine.utils import format_confidence_report
+from processor_engine.database import get_db_engine, create_tables, TimetableSource, ExtractedActivities
+from sqlalchemy.orm import Session
+from datetime import datetime, timezone
+import json
 
 
 def main():
@@ -82,6 +86,60 @@ def main():
         print("SAVING RESULTS")
         print("="*70)
         save_to_json(document, output_path)
+
+        # Persist results to SQLite database and return the timetable source id
+        try:
+            # Use repo-level db directory (../../db/timetable.sqlite relative to src/processor)
+            engine = get_db_engine(db_path="../../db/timetable.sqlite")
+            create_tables(engine)
+
+            with Session(engine) as session:
+                # Insert TimetableSource
+                ts = TimetableSource(file_path=str(document.file_path), processed_at=datetime.now(timezone.utc))
+                session.add(ts)
+                session.commit()
+
+                source_id = ts.id
+
+                # Insert extracted activities
+                for entry in document.entries:
+                    day = entry.weekday.value if entry.weekday else "Unknown"
+                    # Prefer datetime.time isoformat if available, otherwise fall back to raw_text or empty string
+                    start_time = ""
+                    end_time = ""
+                    if entry.timeslot:
+                        try:
+                            if getattr(entry.timeslot, "start_time", None):
+                                start_time = entry.timeslot.start_time.isoformat()
+                        except Exception:
+                            start_time = str(getattr(entry.timeslot, "raw_text", ""))
+                        try:
+                            if getattr(entry.timeslot, "end_time", None):
+                                end_time = entry.timeslot.end_time.isoformat()
+                        except Exception:
+                            end_time = ""
+
+                    notes = entry.notes if getattr(entry, "notes", None) else None
+
+                    ea = ExtractedActivities(
+                        source_id=source_id,
+                        activity_id=None,
+                        day=day,
+                        start_time=str(start_time),
+                        end_time=str(end_time),
+                        notes=notes,
+                    )
+                    session.add(ea)
+
+                session.commit()
+
+            # Print result JSON so callers (Node) can parse the source id
+            print(json.dumps({"timetable_source_id": source_id}))
+        except Exception as e:
+            print(f"\n✗ Database Error: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
         
         print("\n✓ Processing completed successfully!")
         print(f"\nNext step: Use the extracted data from '{output_path}' for database integration")
