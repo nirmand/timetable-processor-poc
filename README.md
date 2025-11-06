@@ -2,8 +2,9 @@
 An app to process timetables with complex and diverse formats and structures, and transforming that information into a single, uniform, and usable format class time tables for teachers.
 
 # POC Status
-1. Implemented end-to-end workflow (Upload timetable -> Process, Parse and Extract from timetable -> Store in a structured format in database -> Display timetable in Calendar view)
-2. Used tech-stack most suitable to specific use case and to keep things simple and efficient (React + Node.JS + Python + Sqlite)
+1. Implemented end-to-end workflow (Upload timetable -> Process, Parse and Extract from timetable -> Store in a structured format in database -> Display timetable in Calendar view).
+2. Used tech-stack most suitable to specific use case and to keep things simple and efficient (React + Node.JS + Python + Sqlite).
+3. Used PaddleOCR for parsing and extracting as it provides higher accuracy on complex, varied, or real-world images compared to other libraries. 
 
 # Future considerations
 1. Increasing accuracy of extraction logic, parsing data and output. This requires improvement at this stage.
