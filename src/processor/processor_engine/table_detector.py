@@ -71,10 +71,60 @@ class TableDetector:
             # Parse table results
             extracted_tables = []
             for table in tables:
+                # Normalize bbox to a simple [x1, y1, x2, y2] if possible.
+                bbox_obj = getattr(table, 'bbox', None)
+                bbox_xy = None
+                try:
+                    if bbox_obj is None:
+                        bbox_xy = None
+                    elif isinstance(bbox_obj, dict):
+                        # common dict shapes
+                        if all(k in bbox_obj for k in ('x1', 'y1', 'x2', 'y2')):
+                            bbox_xy = [bbox_obj['x1'], bbox_obj['y1'], bbox_obj['x2'], bbox_obj['y2']]
+                        elif all(k in bbox_obj for k in ('left', 'top', 'right', 'bottom')):
+                            bbox_xy = [bbox_obj['left'], bbox_obj['top'], bbox_obj['right'], bbox_obj['bottom']]
+                        elif 'points' in bbox_obj and isinstance(bbox_obj['points'], (list, tuple)):
+                            pts = bbox_obj['points']
+                            xs = [p[0] for p in pts]
+                            ys = [p[1] for p in pts]
+                            bbox_xy = [min(xs), min(ys), max(xs), max(ys)]
+                        else:
+                            # try to flatten if possible
+                            vals = [v for v in bbox_obj.values() if isinstance(v, (int, float, list, tuple))]
+                            if len(vals) >= 4 and all(isinstance(v, (int, float)) for v in vals[:4]):
+                                bbox_xy = [float(vals[0]), float(vals[1]), float(vals[2]), float(vals[3])]
+                    else:
+                        # Objects from img2table may provide helpers
+                        if hasattr(bbox_obj, 'to_dict'):
+                            bdict = bbox_obj.to_dict()
+                            if all(k in bdict for k in ('x1', 'y1', 'x2', 'y2')):
+                                bbox_xy = [bdict['x1'], bdict['y1'], bdict['x2'], bdict['y2']]
+                        elif hasattr(bbox_obj, 'to_xyxy'):
+                            xy = bbox_obj.to_xyxy()
+                            bbox_xy = [xy[0], xy[1], xy[2], xy[3]]
+                        elif hasattr(bbox_obj, 'to_list'):
+                            lst = bbox_obj.to_list()
+                            if len(lst) >= 4:
+                                bbox_xy = [lst[0], lst[1], lst[2], lst[3]]
+                        else:
+                            # Try iterable/unpack (e.g., list of points)
+                            try:
+                                seq = list(bbox_obj)
+                                if seq and isinstance(seq[0], (list, tuple)):
+                                    xs = [p[0] for p in seq]
+                                    ys = [p[1] for p in seq]
+                                    bbox_xy = [min(xs), min(ys), max(xs), max(ys)]
+                                elif len(seq) >= 4 and all(isinstance(v, (int, float)) for v in seq[:4]):
+                                    bbox_xy = [seq[0], seq[1], seq[2], seq[3]]
+                            except Exception:
+                                bbox_xy = None
+                except Exception:
+                    bbox_xy = None
+
                 table_data = {
-                    'bbox': table.bbox.to_dict() if hasattr(table, 'bbox') else None,
+                    'bbox': bbox_xy,
                     'content': self._extract_table_content(table),
-                    'title': table.title if hasattr(table, 'title') else None,
+                    'title': getattr(table, 'title', None),
                 }
                 extracted_tables.append(table_data)
             

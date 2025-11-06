@@ -144,7 +144,118 @@ class TimetableParser:
                     if header_slots:
                         entry.timeslot = header_slots[idx % len(header_slots)]
                         idx += 1
-    
+        # Further post-processing: ensure end_time exists and merge overlapping
+        # activities per weekday. This is best-effort: we use other entries' start
+        # times, header_slots and a +60 minute fallback when necessary.
+        from datetime import datetime, timedelta
+
+        def _time_to_minutes(t: time) -> int:
+            return t.hour * 60 + t.minute
+
+        def _minutes_to_time(m: int) -> time:
+            h = (m // 60) % 24
+            mm = m % 60
+            return time(h, mm)
+
+        # Normalize times from raw_text where possible
+        for day, entries in list(by_day.items()):
+            # try to ensure start_time exists where raw_text contains a parsable time
+            for e in entries:
+                ts = e.timeslot
+                if ts and (not ts.start_time) and getattr(ts, 'raw_text', None):
+                    parsed = self.parse_timeslot(ts.raw_text)
+                    if parsed and parsed.start_time:
+                        # copy parsed into existing timeslot preserving raw_text
+                        e.timeslot.start_time = parsed.start_time
+                        if parsed.end_time:
+                            e.timeslot.end_time = parsed.end_time
+
+            # Build sorted list of entries that have a start_time
+            with_start = [e for e in entries if e.timeslot and e.timeslot.start_time]
+            # sort by start_time minutes
+            with_start.sort(key=lambda x: _time_to_minutes(x.timeslot.start_time))
+
+            # assign missing end_time using next entry start, header_slots or +60min
+            for i, e in enumerate(with_start):
+                ts = e.timeslot
+                if not ts.end_time and ts.start_time:
+                    # try next entry
+                    end_assigned = False
+                    for j in range(i+1, len(with_start)):
+                        other = with_start[j]
+                        if other.timeslot and other.timeslot.start_time:
+                            e.timeslot.end_time = other.timeslot.start_time
+                            end_assigned = True
+                            break
+
+                    if not end_assigned and header_slots:
+                        # try to match against header slots
+                        for hs_i, hs in enumerate(header_slots):
+                            if hs and hs.start_time and _time_to_minutes(hs.start_time) == _time_to_minutes(ts.start_time):
+                                # use next header start if exists
+                                if hs_i + 1 < len(header_slots) and header_slots[hs_i + 1].start_time:
+                                    e.timeslot.end_time = header_slots[hs_i + 1].start_time
+                                    end_assigned = True
+                                break
+
+                    if not end_assigned:
+                        # fallback +60 minutes
+                        st_min = _time_to_minutes(ts.start_time)
+                        e.timeslot.end_time = _minutes_to_time(st_min + 60)
+
+            # after ensuring end_times, merge overlapping entries for the day
+            merged: List[TimetableEntry] = []
+            for e in sorted(with_start, key=lambda x: _time_to_minutes(x.timeslot.start_time)):
+                if not merged:
+                    merged.append(e)
+                    continue
+                cur = merged[-1]
+                # if either has None end_time we conservatively skip merging
+                if not cur.timeslot or not cur.timeslot.end_time or not e.timeslot or not e.timeslot.start_time:
+                    merged.append(e)
+                    continue
+
+                cur_end = _time_to_minutes(cur.timeslot.end_time)
+                e_start = _time_to_minutes(e.timeslot.start_time)
+                e_end = _time_to_minutes(e.timeslot.end_time) if e.timeslot.end_time else e_start + 60
+
+                if e_start <= cur_end:
+                    # overlap -> merge
+                    new_start_min = min(_time_to_minutes(cur.timeslot.start_time), e_start)
+                    new_end_min = max(cur_end, e_end)
+                    # combine activity texts if different
+                    if cur.activity and e.activity and cur.activity.strip().lower() != e.activity.strip().lower():
+                        combined_activity = f"{cur.activity} / {e.activity}"
+                    else:
+                        combined_activity = cur.activity or e.activity
+
+                    cur.timeslot.start_time = _minutes_to_time(new_start_min)
+                    cur.timeslot.end_time = _minutes_to_time(new_end_min)
+                    cur.activity = combined_activity
+                    cur.confidence_score = max(cur.confidence_score, e.confidence_score)
+                else:
+                    merged.append(e)
+
+            # replace day's entries in doc with merged ones + any entries without start_time
+            no_start = [e for e in entries if not (e.timeslot and e.timeslot.start_time)]
+            final_list = merged + no_start
+            # update doc.entries: remove old ones for this weekday and add final_list
+            # We'll rebuild doc.entries after finishing all days
+            by_day[day] = final_list
+
+        # Rebuild doc.entries preserving order by weekday and within-day order
+        new_entries: List[TimetableEntry] = []
+        # Try to preserve Monday..Sunday order if Weekday enum supports ordering via name
+        weekday_order = list(Weekday)
+        for wd in weekday_order:
+            if wd in by_day:
+                new_entries.extend(by_day[wd])
+        # append any days not represented in Weekday enum iteration
+        for day, lst in by_day.items():
+            if day not in weekday_order:
+                new_entries.extend(lst)
+
+        doc.entries = new_entries
     def _extract_metadata(
         self, 
         doc: TimetableDocument, 
@@ -537,25 +648,87 @@ class TimetableParser:
             if not weekday:
                 continue
             
-            # Extract activities for each time slot
-            for col_idx, timeslot in time_slots:
-                if col_idx < len(row):
-                    activity_text = row[col_idx].strip()
+            # Extract activities for each time slot. If adjacent columns contain
+            # the same activity text, treat as a span (colspan) and create a
+            # single entry with an end_time that covers the spanned columns.
+            ci = 0
+            while ci < len(time_slots):
+                col_idx, timeslot = time_slots[ci]
+                if col_idx >= len(row):
+                    ci += 1
+                    continue
 
-                    if not activity_text or activity_text.lower() in ['', 'nan', 'none']:
-                        continue
+                activity_text = row[col_idx].strip()
+                if not activity_text or activity_text.lower() in ['', 'nan', 'none']:
+                    ci += 1
+                    continue
 
-                    # If the cell explicitly contains a time range, prefer that
-                    explicit_ts = self.parse_timeslot(activity_text, reference_times=header_times)
-                    final_ts = explicit_ts or timeslot
+                # If the cell explicitly contains a time range, prefer that
+                explicit_ts = self.parse_timeslot(activity_text, reference_times=header_times)
 
-                    entry = TimetableEntry(
-                        weekday=weekday,
-                        timeslot=final_ts,
-                        activity=activity_text,
-                        confidence_score=0.85  # Table-based extraction is typically reliable
-                    )
-                    entries.append(entry)
+                # Check for identical consecutive cells to detect colspan
+                span_last_col = col_idx
+                span_count = 1
+                for look in range(ci + 1, len(time_slots)):
+                    next_col_idx, _ = time_slots[look]
+                    if next_col_idx < len(row):
+                        next_text = row[next_col_idx].strip()
+                        # consider equal if normalized texts match
+                        if next_text and next_text.lower().strip() == activity_text.lower().strip():
+                            span_last_col = next_col_idx
+                            span_count += 1
+                            continue
+                    break
+
+                # Build final timeslot: explicit > spanned header range > single header
+                final_ts = explicit_ts
+                if not final_ts:
+                    start_slot = timeslot
+                    # end time: if there is a header after the last spanned column, use its start
+                    # otherwise use the end_time of the last header or estimate +1 hour
+                    try:
+                        last_index = None
+                        # find index of span_last_col in time_slots to get following header
+                        for idx_map, (tci, _) in enumerate(time_slots):
+                            if tci == span_last_col:
+                                last_index = idx_map
+                                break
+
+                        if last_index is not None and (last_index + 1) < len(time_slots):
+                            next_header_ts = time_slots[last_index + 1][1]
+                            if next_header_ts and next_header_ts.start_time:
+                                final_ts = TimeSlot(start_time=start_slot.start_time, end_time=next_header_ts.start_time, raw_text=activity_text)
+                            else:
+                                # fall back to last header's end_time
+                                last_header = time_slots[last_index][1]
+                                if last_header and last_header.end_time:
+                                    final_ts = TimeSlot(start_time=start_slot.start_time, end_time=last_header.end_time, raw_text=activity_text)
+                                else:
+                                    # estimate +1 hour
+                                    est_end = (start_slot.start_time.hour + 1) % 24
+                                    final_ts = TimeSlot(start_time=start_slot.start_time, end_time=time(est_end, start_slot.start_time.minute), raw_text=activity_text)
+                        else:
+                            # no following header; use last header end_time or estimate
+                            last_header = timeslot
+                            if last_header and last_header.end_time:
+                                final_ts = TimeSlot(start_time=start_slot.start_time, end_time=last_header.end_time, raw_text=activity_text)
+                            else:
+                                est_end = (start_slot.start_time.hour + 1) % 24
+                                final_ts = TimeSlot(start_time=start_slot.start_time, end_time=time(est_end, start_slot.start_time.minute), raw_text=activity_text)
+                    except Exception:
+                        # fallback to the original timeslot
+                        final_ts = timeslot
+
+                entry = TimetableEntry(
+                    weekday=weekday,
+                    timeslot=final_ts,
+                    activity=activity_text,
+                    confidence_score=0.85  # Table-based extraction is typically reliable
+                )
+                entries.append(entry)
+
+                # advance by span_count
+                ci += span_count
         
         return entries
     
