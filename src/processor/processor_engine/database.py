@@ -33,10 +33,10 @@ class ExtractedActivities(Base):
 
     id = Column(Integer, primary_key=True)
     source_id = Column(Integer, ForeignKey("timetable_sources.id"), nullable=False)
-    activity_id = Column(Integer, ForeignKey("timeslot_activities.id"), nullable=False)
+    activity_id = Column(Integer, ForeignKey("timeslot_activities.id"), nullable=True)
     day = Column(String(50), nullable=False)
-    time_slot = Column(String(100), nullable=False)
-    duration = Column(Integer, nullable=False)
+    start_time = Column(String(100), nullable=False)
+    end_time = Column(String(100), nullable=False)
     notes = Column(String(500), nullable=True)
 
 

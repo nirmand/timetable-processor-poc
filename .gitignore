@@ -5,3 +5,4 @@ dist/
 build/
 __pycache__/
 src/processor/tests/*
+db/timetable.sqlite
