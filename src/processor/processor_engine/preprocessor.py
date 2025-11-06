@@ -53,18 +53,18 @@ class DocumentPreprocessor:
             List containing single preprocessed image
         """
         try:
-            # Load image with PIL
-            image = Image.open(file_path)
+            # Load image directly with OpenCV (returns BGR format, which PaddleOCR expects)
+            img_array = cv2.imread(str(file_path))
             
-            # Convert to RGB if necessary
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
+            if img_array is None:
+                raise ValueError(f"Failed to load image: {file_path}")
             
-            # Convert to numpy array
-            img_array = np.array(image)
+            print(f"  → Loaded image: shape={img_array.shape}, dtype={img_array.dtype}")
             
-            # Preprocess image
+            # Preprocess image (keeps BGR format for OCR)
             processed = self._preprocess_image(img_array)
+            
+            print(f"  → Preprocessed: shape={processed.shape}, dtype={processed.dtype}")
             
             return [processed]
         except Exception as e:
@@ -90,11 +90,13 @@ class DocumentPreprocessor:
                 fmt='RGB'
             )
             
-            # Convert PIL images to numpy arrays and preprocess
+            # Convert PIL images to numpy arrays (BGR format for PaddleOCR) and preprocess
             processed_images = []
             for img in images:
+                # Convert PIL Image (RGB) to numpy array then to BGR for OpenCV/PaddleOCR
                 img_array = np.array(img)
-                processed = self._preprocess_image(img_array)
+                img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                processed = self._preprocess_image(img_bgr)
                 processed_images.append(processed)
             
             return processed_images
@@ -153,25 +155,21 @@ class DocumentPreprocessor:
         Apply preprocessing to improve OCR accuracy.
         
         Args:
-            image: Input image as numpy array
+            image: Input image as numpy array (BGR format from OpenCV)
         
         Returns:
-            Preprocessed image
+            Preprocessed image (BGR format)
         """
-        # Convert to grayscale for better OCR (optional, depends on use case)
-        # For colored timetables, we might want to keep color
-        # gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        
-        # Denoise
+        # Denoise (works with BGR format)
         denoised = cv2.fastNlMeansDenoisingColored(image, None, 10, 10, 7, 21)
         
-        # Enhance contrast using CLAHE
-        lab = cv2.cvtColor(denoised, cv2.COLOR_RGB2LAB)
+        # Enhance contrast using CLAHE on LAB color space
+        lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         l = clahe.apply(l)
         enhanced = cv2.merge([l, a, b])
-        enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2RGB)
+        enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
         
         return enhanced
     

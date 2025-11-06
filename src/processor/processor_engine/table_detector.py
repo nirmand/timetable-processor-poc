@@ -29,7 +29,7 @@ class TableDetector:
         Detect and extract tables from image.
         
         Args:
-            image: Input image as numpy array
+            image: Input image as numpy array (BGR format from OpenCV)
         
         Returns:
             List of dictionaries containing:
@@ -38,22 +38,26 @@ class TableDetector:
                 - title: Table title if detected
         """
         try:
-            # Convert numpy array to PIL Image for img2table
-            # img2table expects PIL Image, not numpy array
+            import tempfile
+            import cv2
+            
             if isinstance(image, np.ndarray):
-                # Handle BGR (OpenCV) to RGB (PIL) conversion if needed
-                if len(image.shape) == 3 and image.shape[2] == 3:
-                    # Assume BGR from OpenCV, convert to RGB
-                    from cv2 import cvtColor, COLOR_BGR2RGB
-                    image_rgb = cvtColor(image, COLOR_BGR2RGB)
-                    pil_image = Image.fromarray(image_rgb)
-                else:
-                    pil_image = Image.fromarray(image)
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(image_rgb)
             else:
                 pil_image = image
             
-            # Create img2table Image object
-            doc = Img2TableImage(pil_image)
+            # img2table requires a file path, not a PIL Image
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                tmp_path = tmp.name
+            pil_image.save(tmp_path)
+        finally:
+            # Clean up temporary file
+            import os
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        try:
+            doc = Img2TableImage(tmp_path)
             
             # Extract tables
             tables = doc.extract_tables(
@@ -80,6 +84,8 @@ class TableDetector:
         
         except Exception as e:
             print(f"Error during table detection: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     def _extract_table_content(self, table) -> List[List[str]]:

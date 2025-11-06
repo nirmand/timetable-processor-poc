@@ -28,7 +28,7 @@ class OCRExtractor:
         Extract text from image using PaddleOCR.
         
         Args:
-            image: Input image as numpy array
+            image: Input image as numpy array (BGR format from OpenCV)
         
         Returns:
             List of dictionaries containing:
@@ -38,37 +38,75 @@ class OCRExtractor:
                 - position: Normalized center position (x, y)
         """
         try:
-            # Run OCR (cls is controlled by use_angle_cls in initialization)
+            # Debug: Check image properties
+            if image is None:
+                print("    Warning: Received None image")
+                return []
+            
+            if not isinstance(image, np.ndarray):
+                print(f"    Warning: Image is not numpy array, got {type(image)}")
+                return []
+            
+            if image.size == 0:
+                print("    Warning: Empty image array")
+                return []
+            
+            # Run OCR (expects BGR format from OpenCV)
             result = self.ocr.ocr(image)
             
             if not result or not result[0]:
+                print("    Warning: PaddleOCR returned no results")
                 return []
             
             # Parse results
             extracted_data = []
             for line in result[0]:
-                bbox = line[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-                text_info = line[1]  # (text, confidence)
-                
-                text = text_info[0].strip()
-                confidence = float(text_info[1])
-                
-                # Calculate center position for spatial analysis
-                center_x = sum(point[0] for point in bbox) / 4
-                center_y = sum(point[1] for point in bbox) / 4
-                
-                # Normalize position (0-1 range)
-                h, w = image.shape[:2]
-                norm_x = center_x / w
-                norm_y = center_y / h
-                
-                extracted_data.append({
-                    'text': text,
-                    'bbox': bbox,
-                    'confidence': confidence,
-                    'position': (norm_x, norm_y),
-                    'center': (center_x, center_y),
-                })
+                try:
+                    # Validate line structure
+                    if not line or len(line) < 2:
+                        continue
+                    
+                    bbox = line[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                    text_info = line[1]  # (text, confidence)
+                    
+                    # Validate text_info structure
+                    if not text_info or len(text_info) < 2:
+                        continue
+                    
+                    # Safely extract text and confidence
+                    text = str(text_info[0]).strip() if text_info[0] else ""
+                    
+                    # Skip empty text
+                    if not text:
+                        continue
+                    
+                    confidence = float(text_info[1])
+                    
+                    # Validate bbox structure
+                    if not bbox or len(bbox) < 4:
+                        continue
+                    
+                    # Calculate center position for spatial analysis
+                    center_x = sum(point[0] for point in bbox) / 4
+                    center_y = sum(point[1] for point in bbox) / 4
+                    
+                    # Normalize position (0-1 range)
+                    h, w = image.shape[:2]
+                    norm_x = center_x / w
+                    norm_y = center_y / h
+                    
+                    extracted_data.append({
+                        'text': text,
+                        'bbox': bbox,
+                        'confidence': confidence,
+                        'position': (norm_x, norm_y),
+                        'center': (center_x, center_y),
+                    })
+                    
+                except (IndexError, ValueError, TypeError) as line_error:
+                    # Skip malformed lines but continue processing others
+                    print(f"    Warning: Skipping malformed OCR result: {line_error}")
+                    continue
             
             # Sort by vertical position (top to bottom), then horizontal (left to right)
             extracted_data.sort(key=lambda x: (x['center'][1], x['center'][0]))
@@ -77,6 +115,8 @@ class OCRExtractor:
         
         except Exception as e:
             print(f"Error during OCR extraction: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     def extract_text_by_regions(

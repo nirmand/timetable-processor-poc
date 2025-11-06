@@ -27,7 +27,13 @@ class Weekday(Enum):
         Returns:
             Weekday enum or None if not matched
         """
+        if not day_str or not isinstance(day_str, str):
+            return None
+        
         day_str = day_str.strip().upper()
+        
+        if not day_str:
+            return None
         
         day_mapping = {
             'M': cls.MONDAY, 'MON': cls.MONDAY, 'MONDAY': cls.MONDAY,

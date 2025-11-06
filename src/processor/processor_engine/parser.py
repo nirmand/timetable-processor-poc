@@ -82,8 +82,15 @@ class TimetableParser:
             doc: TimetableDocument to update
             ocr_data: OCR extracted data
         """
+        if not ocr_data:
+            return
+        
         # Look for metadata in first few lines
-        text_items = [item['text'] for item in ocr_data[:10]]
+        text_items = [item.get('text', '') for item in ocr_data[:10] if item.get('text')]
+        
+        if not text_items:
+            return
+        
         full_text = ' '.join(text_items).lower()
         
         # Class pattern (e.g., "Class: 2EJ", "2EJ", "4M")
@@ -157,8 +164,14 @@ class TimetableParser:
         structure = {'type': 'unknown', 'day_index': -1, 'time_indices': []}
         
         # Check first column for weekdays
-        if content:
-            first_col = [row[0].lower() if row else '' for row in content[1:]]
+        if content and len(content) > 1:
+            first_col = []
+            for row in content[1:]:
+                if row and len(row) > 0:
+                    first_col.append(row[0].lower() if isinstance(row[0], str) else '')
+                else:
+                    first_col.append('')
+            
             weekday_count = sum(1 for cell in first_col if self._contains_weekday(cell))
             
             if weekday_count >= 3:
@@ -169,13 +182,13 @@ class TimetableParser:
                 if content[0]:
                     structure['time_indices'] = [
                         i for i, cell in enumerate(content[0]) 
-                        if self._contains_time(cell)
+                        if cell and isinstance(cell, str) and self._contains_time(cell)
                     ]
                 return structure
         
         # Check first row for weekdays
-        if content and content[0]:
-            first_row = [cell.lower() for cell in content[0]]
+        if content and len(content) > 0 and content[0]:
+            first_row = [cell.lower() if isinstance(cell, str) else '' for cell in content[0]]
             weekday_count = sum(1 for cell in first_row if self._contains_weekday(cell))
             
             if weekday_count >= 3:
@@ -402,6 +415,14 @@ class TimetableParser:
         Returns:
             TimeSlot object or None
         """
+        if not text or not isinstance(text, str):
+            return None
+        
+        text = text.strip()
+        
+        if not text:
+            return None
+        
         # Try range pattern first
         range_match = self.time_range_pattern.search(text)
         if range_match:
@@ -438,21 +459,30 @@ class TimetableParser:
     
     def _contains_weekday(self, text: str) -> bool:
         """Check if text contains a weekday."""
+        if not text or not isinstance(text, str):
+            return False
         return Weekday.from_string(text) is not None
     
     def _contains_time(self, text: str) -> bool:
         """Check if text contains time information."""
+        if not text or not isinstance(text, str):
+            return False
         return bool(self.time_pattern.search(text) or 
                    self.time_range_pattern.search(text) or
                    'am' in text.lower() or 'pm' in text.lower())
     
     def _is_time_only(self, text: str) -> bool:
         """Check if text is only time (no other content)."""
+        if not text or not isinstance(text, str):
+            return False
         cleaned = re.sub(r'[\d:.\-–—\s]+(?:am|pm)?', '', text, flags=re.IGNORECASE)
         return len(cleaned.strip()) < 2
     
     def _is_activity(self, text: str) -> bool:
         """Check if text appears to be an activity."""
+        if not text or not isinstance(text, str):
+            return False
+        
         text_lower = text.lower().strip()
         
         if len(text_lower) < 2:
