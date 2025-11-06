@@ -4,7 +4,10 @@ An app to process timetables with complex and diverse formats and structures, an
 # POC Status
 1. Implemented end-to-end workflow (Upload timetable -> Process, Parse and Extract from timetable -> Store in a structured format in database -> Display timetable in Calendar view).
 2. Used tech-stack most suitable to specific use case and to keep things simple and efficient (React + Node.JS + Python + Sqlite).
-3. Used PaddleOCR for parsing and extracting as it provides higher accuracy on complex, varied, or real-world images compared to other libraries. 
+3. Used PaddleOCR for parsing and extracting as it provides higher accuracy on complex, varied, or real-world images compared to other libraries.
+
+# Known Issues/ Limitations
+1. Parsing and extraction process requires significant improvements as it's giving partially correct data, but isn't accurate in many places. The issue is mostly with the parsing and table detaction logic in Python processor engine.
 
 # Future considerations
 1. Increasing accuracy of extraction logic, parsing data and output. This requires improvement at this stage.
@@ -15,5 +18,5 @@ An app to process timetables with complex and diverse formats and structures, an
 6. CI/ CD pipeline
 
 # References
-[Architecture](https://github.com/nirmand/timetable-processor-poc/blob/main/architecture.md)
-[Setup](https://github.com/nirmand/timetable-processor-poc/blob/main/setup.md)
+- [Architecture](https://github.com/nirmand/timetable-processor-poc/blob/main/architecture.md)
+- [Setup](https://github.com/nirmand/timetable-processor-poc/blob/main/setup.md)
