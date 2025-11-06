@@ -15,5 +15,5 @@ An app to process timetables with complex and diverse formats and structures, an
 6. CI/ CD pipeline
 
 # References
-[Architecture](https://github.com/nirmand/timetable-processor-poc/blob/main/architecture.md)
-[Setup](https://github.com/nirmand/timetable-processor-poc/blob/main/setup.md)
+- [Architecture](https://github.com/nirmand/timetable-processor-poc/blob/main/architecture.md)
+- [Setup](https://github.com/nirmand/timetable-processor-poc/blob/main/setup.md)
