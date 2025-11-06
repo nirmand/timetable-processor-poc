@@ -5,12 +5,14 @@ import path from "path";
 import fs from "fs";
 import { spawn } from "child_process";
 import Database from "better-sqlite3";
+import cors from "cors";
 
 dotenv.config();
 
 const app: Express = express();
 const port = process.env.PORT || 3000;
 
+app.use(cors());
 app.use(express.json());
 
 // Enable CORS
@@ -88,65 +90,73 @@ app.post("/timetable/upload", upload.single("file"), (req, res) => {
         return res.status(500).json({ error: "Processor failed", code, details: stderr });
       }
 
-      // Extract last JSON object from stdout (processor prints logs + final JSON)
-      const trimmed = stdout.trim();
-      const jsonMatch = trimmed.match(/\{[\s\S]*\}$/);
-      if (!jsonMatch) {
-        return res.status(500).json({ error: "No JSON output from processor", raw: stdout });
+      // Extract JSON from last line of stdout (processor prints logs + final JSON on last line)
+      const lines = stdout.trim().split('\n');
+      const lastLine = lines[lines.length - 1];
+      
+      let result;
+      try {
+        result = JSON.parse(lastLine);
+      } catch (parseError) {
+        // Fallback: try to extract last JSON object from entire output
+        const jsonMatch = stdout.trim().match(/\{[^{}]*"timetable_source_id"[^{}]*\}(?!.*\{)/);
+        if (!jsonMatch) {
+          return res.status(500).json({ error: "No valid JSON output from processor", raw: stdout });
+        }
+        try {
+          result = JSON.parse(jsonMatch[0]);
+        } catch (e) {
+          return res.status(500).json({ error: "Invalid JSON from processor", parseError: String(e), raw: stdout });
+        }
       }
 
+      const sourceId = result.timetable_source_id;
+
+      if (!sourceId) {
+        return res.status(500).json({ error: "No timetable_source_id in processor output" });
+      }
+
+      // Read from database
       try {
-        const result = JSON.parse(jsonMatch[0]);
-        const sourceId = result.timetable_source_id;
+        const db = new Database(DB_PATH, { readonly: true });
+        
+        // Get timetable source
+        const source = db.prepare(`
+          SELECT id, file_path, processed_at 
+          FROM timetable_sources 
+          WHERE id = ?
+        `).get(sourceId) as { id: number; file_path: string; processed_at: string } | undefined;
 
-        if (!sourceId) {
-          return res.status(500).json({ error: "No timetable_source_id in processor output" });
-        }
-
-        // Read from database
-        try {
-          const db = new Database(DB_PATH, { readonly: true });
-          
-          // Get timetable source
-          const source = db.prepare(`
-            SELECT id, file_path, processed_at 
-            FROM timetable_sources 
-            WHERE id = ?
-          `).get(sourceId) as { id: number; file_path: string; processed_at: string } | undefined;
-
-          if (!source) {
-            db.close();
-            return res.status(404).json({ error: "Timetable source not found in database" });
-          }
-
-          // Get extracted activities
-          const activities = db.prepare(`
-            SELECT id, day, start_time, end_time, notes 
-            FROM extracted_activities 
-            WHERE source_id = ?
-            ORDER BY id
-          `).all(sourceId) as Array<{
-            id: number;
-            day: string;
-            start_time: string;
-            end_time: string;
-            notes: string | null;
-          }>;
-
+        if (!source) {
           db.close();
-
-          return res.json({
-            timetable_source_id: source.id,
-            file_path: source.file_path,
-            processed_at: source.processed_at,
-            activities: activities
-          });
-        } catch (dbError) {
-          console.error("Database error:", dbError);
-          return res.status(500).json({ error: "Failed to read from database", details: String(dbError) });
+          return res.status(404).json({ error: "Timetable source not found in database" });
         }
-      } catch (e) {
-        return res.status(500).json({ error: "Invalid JSON from processor", parseError: String(e), raw: jsonMatch[0] });
+
+        // Get extracted activities
+        const activities = db.prepare(`
+          SELECT id, day, start_time, end_time, notes 
+          FROM extracted_activities 
+          WHERE source_id = ?
+          ORDER BY id
+        `).all(sourceId) as Array<{
+          id: number;
+          day: string;
+          start_time: string;
+          end_time: string;
+          notes: string | null;
+        }>;
+
+        db.close();
+
+        return res.json({
+          timetable_source_id: source.id,
+          file_path: source.file_path,
+          processed_at: source.processed_at,
+          activities: activities
+        });
+      } catch (dbError) {
+        console.error("Database error:", dbError);
+        return res.status(500).json({ error: "Failed to read from database", details: String(dbError) });
       }
     });
   } catch (err) {

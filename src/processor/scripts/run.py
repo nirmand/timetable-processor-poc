@@ -133,8 +133,8 @@ def main():
 
                 session.commit()
 
-            # Print result JSON so callers (Node) can parse the source id
-            print(json.dumps({"timetable_source_id": source_id}))
+            # Store source_id to print at the very end
+            result_json = json.dumps({"timetable_source_id": source_id})
         except Exception as e:
             print(f"\n✗ Database Error: {e}")
             import traceback
@@ -143,6 +143,9 @@ def main():
         
         print("\n✓ Processing completed successfully!")
         print(f"\nNext step: Use the extracted data from '{output_path}' for database integration")
+        
+        # Print result JSON as the absolute last line so callers (Node) can parse the source id
+        print(result_json)
         
     except FileNotFoundError as e:
         print(f"\n✗ File Error: {e}")
