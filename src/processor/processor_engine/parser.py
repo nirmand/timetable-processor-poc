@@ -11,15 +11,9 @@ class TimetableParser:
     
     def __init__(self):
         """Initialize the parser with regex patterns."""
-        # Time patterns (e.g., "9:00", "10.45", "9-9:30", "11.00 - 11.55")
-        self.time_pattern = re.compile(
-            r'(\d{1,2})[:.](\d{2})\s*(?:am|pm|AM|PM)?'
-        )
-        
-        # Time range patterns
-        self.time_range_pattern = re.compile(
-            r'(\d{1,2})[:.](\d{2})\s*(?:am|pm|AM|PM)?\s*[-–—]\s*(\d{1,2})[:.](\d{2})\s*(?:am|pm|AM|PM)?'
-        )
+        # Flexible time detection (hours with optional minutes and optional am/pm)
+        # Examples matched: '9', '9:00', '09.30', '1pm', '1:15 pm'
+        self._time_re = re.compile(r'(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|AM|PM)?')
         
         # Activity indicators (common subjects/activities)
         self.activity_keywords = {
@@ -60,15 +54,96 @@ class TimetableParser:
             for entry in entries:
                 doc.add_entry(entry)
         else:
-            # Fallback: Parse raw OCR data
-            entries = self._parse_ocr_data(ocr_data)
+            # Try a smarter OCR-only fallback that infers column time slots from
+            # header time tokens and maps OCR boxes into those columns. If that
+            # fails, fall back to the older row-based OCR parser.
+            entries = self._parse_ocr_with_inferred_columns(ocr_data)
+            if not entries:
+                entries = self._parse_ocr_data(ocr_data)
+
             for entry in entries:
                 doc.add_entry(entry)
         
         # Set extraction timestamp
         doc.extraction_timestamp = datetime.now().isoformat()
-        
+
+        # Post-process entries: try to assign missing times using OCR header time tokens
+        try:
+            self._postprocess_entries(doc, ocr_data)
+        except Exception:
+            # non-fatal
+            pass
+
         return doc
+
+    def _postprocess_entries(self, doc: TimetableDocument, ocr_data: List[Dict[str, any]]) -> None:
+        """
+        Post-process parsed entries to assign missing times where possible.
+
+        Strategy (heuristic):
+        - Collect time tokens from OCR that appear near the top of the page (header row)
+        - Sort them left-to-right to form the column time slots
+        - For each weekday, assign missing times to entries in reading order using these header slots
+        This is a best-effort heuristic for cases where table structure wasn't detected.
+        """
+        if not ocr_data or not doc.entries:
+            return
+
+        # Collect header-like time tokens (located near top of page)
+        header_candidates = []
+        for item in ocr_data:
+            txt = item.get('text', '')
+            if not txt or not isinstance(txt, str):
+                continue
+            if self._contains_time(txt):
+                # prefer items near the top (norm y small)
+                pos = item.get('position', (0.5, 0.5))
+                y = pos[1]
+                x = pos[0]
+                header_candidates.append((y, x, txt))
+
+        if not header_candidates:
+            return
+
+        # Choose candidates in top portion (y < 0.3) if available, else top half
+        top_candidates = [c for c in header_candidates if c[0] < 0.30]
+        if not top_candidates:
+            top_candidates = [c for c in header_candidates if c[0] < 0.50]
+
+        # Parse times and sort left-to-right
+        parsed = []
+        for y, x, txt in top_candidates:
+            ts = self.parse_timeslot(txt)
+            if ts:
+                parsed.append((x, ts))
+
+        if not parsed:
+            return
+
+        parsed.sort(key=lambda p: p[0])
+        header_slots = [p[1] for p in parsed]
+
+        # For each weekday, assign missing times in order using header_slots
+        from collections import defaultdict
+        by_day = defaultdict(list)
+        for entry in doc.entries:
+            by_day[entry.weekday].append(entry)
+
+        for day, entries in by_day.items():
+            # Build an index over header slots
+            idx = 0
+            for entry in entries:
+                # Skip entries that look like metadata or are very short
+                text_l = (entry.activity or '').lower()
+                if any(k in text_l for k in ('class:', 'teacher', 'term', 'school', 'file')):
+                    continue
+                if len(text_l.strip()) < 3:
+                    continue
+
+                if entry.timeslot is None:
+                    if header_slots:
+                        entry.timeslot = header_slots[idx % len(header_slots)]
+                        idx += 1
     
     def _extract_metadata(
         self, 
@@ -150,6 +225,226 @@ class TimetableParser:
                 entries.extend(self._parse_generic_table(content))
         
         return entries
+
+    def _parse_ocr_with_inferred_columns(self, ocr_data: List[Dict[str, any]]) -> List[TimetableEntry]:
+        """
+        Attempt to infer column time slots from header time tokens (top of page)
+        and map OCR items into those columns. This helps handle tables where
+        img2table failed (no ximgproc available) and where cells span multiple
+        time slots.
+        """
+        entries: List[TimetableEntry] = []
+
+        if not ocr_data:
+            return entries
+
+        # Infer image width from OCR bbox coordinates if available
+        img_w = self._compute_image_width(ocr_data)
+
+        # Find header time tokens near top of page
+        header_slots = self._infer_header_slots_from_ocr(ocr_data, img_w)
+        if not header_slots or len(header_slots) < 2:
+            # not enough header info to form columns
+            return entries
+
+        # Build column boundaries (x ranges) from header center positions
+        centers = [s['x'] for s in header_slots]
+        centers_px = [s['x_px'] for s in header_slots]
+        centers_sorted = sorted(list(zip(centers_px, header_slots)), key=lambda x: x[0])
+        centers_px_sorted = [c for c, s in centers_sorted]
+        slots_sorted = [s for c, s in centers_sorted]
+
+        # boundaries are midpoints between consecutive centers
+        boundaries = []
+        for i in range(len(centers_px_sorted) - 1):
+            mid = (centers_px_sorted[i] + centers_px_sorted[i+1]) / 2.0
+            boundaries.append(mid)
+
+        # Build column ranges as (left, right) in pixels
+        col_ranges: List[Tuple[float, float]] = []
+        left = 0.0
+        for b in boundaries:
+            col_ranges.append((left, b))
+            left = b
+        # last column to image width
+        col_ranges.append((left, img_w))
+
+        # Group OCR items by detected weekday (rows)
+        rows = self._group_by_rows(ocr_data)
+
+        current_day: Optional[Weekday] = None
+
+        for row in rows:
+            # detect if this row contains a weekday
+            weekday = None
+            for item in row:
+                wd = Weekday.from_string(item.get('text', ''))
+                if wd:
+                    weekday = wd
+                    current_day = wd
+                    break
+
+            if not weekday:
+                weekday = current_day
+
+            if not weekday:
+                # cannot assign entries without weekday context
+                continue
+
+            # For each text item in row, decide if it's a time token, metadata or activity
+            for item in row:
+                txt = item.get('text', '').strip()
+                if not txt:
+                    continue
+
+                # skip header-like metadata rows
+                if any(k in txt.lower() for k in ('class:', 'teacher', 'term', 'school')):
+                    continue
+
+                # if the cell explicitly contains a time range, prefer that
+                explicit_ts = self.parse_timeslot(txt, reference_times=[s['slot'] for s in slots_sorted])
+                if explicit_ts and not self._is_activity(txt):
+                    # if it is a pure time cell, we don't create an activity
+                    continue
+
+                # Determine which columns this item's bbox spans
+                bbox = item.get('bbox')
+                if bbox and len(bbox) >= 4:
+                    xs = [p[0] for p in bbox]
+                    min_x = min(xs)
+                    max_x = max(xs)
+                else:
+                    # fallback to center pixel
+                    cx = item.get('center', (0, 0))[0]
+                    min_x = cx - 1
+                    max_x = cx + 1
+
+                overlapping_cols = []
+                for ci, (l, r) in enumerate(col_ranges):
+                    # consider overlap if bbox intersects column range
+                    if max_x >= l and min_x <= r:
+                        overlapping_cols.append(ci)
+
+                if not overlapping_cols:
+                    # couldn't map to any column; skip
+                    continue
+
+                # compute timeslot for this item:
+                final_ts = None
+                if explicit_ts:
+                    final_ts = explicit_ts
+                else:
+                    first_col = overlapping_cols[0]
+                    last_col = overlapping_cols[-1]
+                    # start from header slot start
+                    start_slot = slots_sorted[first_col]['slot']
+                    # end time: if the last_col has a next header, use its start as end
+                    if last_col + 1 < len(slots_sorted):
+                        end_slot = slots_sorted[last_col + 1]['slot']
+                        # if that slot has a start_time, use it as end
+                        if end_slot and end_slot.start_time:
+                            final_ts = TimeSlot(start_time=start_slot.start_time, end_time=end_slot.start_time, raw_text=txt)
+                        else:
+                            # fallback: if header slots have end_time, use last's end_time or estimate 60 minutes
+                            if slots_sorted[last_col]['slot'] and slots_sorted[last_col]['slot'].end_time:
+                                final_ts = TimeSlot(start_time=start_slot.start_time, end_time=slots_sorted[last_col]['slot'].end_time, raw_text=txt)
+                            else:
+                                # estimate one hour slot
+                                sh = start_slot.start_time.hour
+                                sm = start_slot.start_time.minute
+                                est_end = (sh + 1) % 24
+                                final_ts = TimeSlot(start_time=start_slot.start_time, end_time=time(est_end, sm), raw_text=txt)
+                    else:
+                        # last column — try to use its own end_time or estimate
+                        last_header = slots_sorted[last_col]['slot']
+                        if last_header and last_header.end_time:
+                            final_ts = TimeSlot(start_time=start_slot.start_time, end_time=last_header.end_time, raw_text=txt)
+                        else:
+                            sh = start_slot.start_time.hour
+                            sm = start_slot.start_time.minute
+                            est_end = (sh + 1) % 24
+                            final_ts = TimeSlot(start_time=start_slot.start_time, end_time=time(est_end, sm), raw_text=txt)
+
+                # If still no timeslot, fallback to parse one from text
+                if not explicit_ts and not final_ts:
+                    final_ts = self.parse_timeslot(txt, reference_times=[s['slot'] for s in slots_sorted])
+
+                # Normalize timeslot: ensure end_time > start_time, else estimate +1 hour
+                if final_ts and final_ts.start_time and final_ts.end_time:
+                    sh_m = final_ts.start_time.hour * 60 + final_ts.start_time.minute
+                    eh_m = final_ts.end_time.hour * 60 + final_ts.end_time.minute
+                    if eh_m <= sh_m:
+                        # assume spanning next slot — set end = start + 60 minutes
+                        new_end_hour = (final_ts.start_time.hour + 1) % 24
+                        final_ts.end_time = time(new_end_hour, final_ts.start_time.minute)
+
+                # If text appears to be an activity, create entry
+                if self._is_activity(txt):
+                    avg_confidence = item.get('confidence', 0.8)
+                    entry = TimetableEntry(
+                        weekday=weekday,
+                        timeslot=final_ts,
+                        activity=txt,
+                        confidence_score=avg_confidence
+                    )
+                    entries.append(entry)
+
+        return entries
+
+    def _infer_header_slots_from_ocr(self, ocr_data: List[Dict[str, any]], img_w: float) -> List[Dict[str, any]]:
+        """
+        Find header time tokens near the top of the page and return a list of
+        dicts: { 'x': normalized_x, 'x_px': center_x_pixels, 'slot': TimeSlot }
+        """
+        candidates = []
+        for item in ocr_data:
+            txt = item.get('text', '')
+            if not txt or not isinstance(txt, str):
+                continue
+            # location near the top
+            y = item.get('position', (0.5, 0.5))[1]
+            if y > 0.35:
+                continue
+            if self._contains_time(txt):
+                ts = self.parse_timeslot(txt)
+                if ts:
+                    candidates.append((item.get('center', (0, 0))[0], item.get('position', (0, 0))[0], ts))
+
+        if not candidates:
+            return []
+
+        # candidates: (center_px, norm_x, slot)
+        # sort by center_px
+        candidates.sort(key=lambda x: x[0])
+
+        header_slots = []
+        seen = set()
+        for center_px, norm_x, slot in candidates:
+            key = (int(center_px), getattr(slot, 'raw_text', ''))
+            if key in seen:
+                continue
+            seen.add(key)
+            header_slots.append({'x': norm_x, 'x_px': center_px, 'slot': slot})
+
+        return header_slots
+
+    def _compute_image_width(self, ocr_data: List[Dict[str, any]]) -> float:
+        """Estimate image width from OCR bbox coordinates (pixels)."""
+        max_x = 0.0
+        for it in ocr_data:
+            bbox = it.get('bbox')
+            if bbox and isinstance(bbox, list):
+                try:
+                    xs = [p[0] for p in bbox]
+                    max_x = max(max_x, max(xs))
+                except Exception:
+                    continue
+            else:
+                cx = it.get('center', (0, 0))[0]
+                if cx:
+                    max_x = max(max_x, cx)
+
+        return max_x if max_x > 0 else 1.0
     
     def _identify_table_structure(self, content: List[List[str]]) -> Dict[str, any]:
         """
@@ -221,11 +516,14 @@ class TimetableParser:
         
         # Get time slots from header row
         time_slots = []
-        if content:
+        header_times: List[TimeSlot] = []
+        if content and content[0]:
             for i, cell in enumerate(content[0]):
                 if i > day_col:  # Skip day column
                     timeslot = self.parse_timeslot(cell)
                     time_slots.append((i, timeslot))
+                    if timeslot:
+                        header_times.append(timeslot)
         
         # Parse each row (each row is a day)
         for row in content[1:]:
@@ -243,15 +541,21 @@ class TimetableParser:
             for col_idx, timeslot in time_slots:
                 if col_idx < len(row):
                     activity_text = row[col_idx].strip()
-                    
-                    if activity_text and activity_text.lower() not in ['', 'nan', 'none']:
-                        entry = TimetableEntry(
-                            weekday=weekday,
-                            timeslot=timeslot,
-                            activity=activity_text,
-                            confidence_score=0.85  # Table-based extraction is typically reliable
-                        )
-                        entries.append(entry)
+
+                    if not activity_text or activity_text.lower() in ['', 'nan', 'none']:
+                        continue
+
+                    # If the cell explicitly contains a time range, prefer that
+                    explicit_ts = self.parse_timeslot(activity_text, reference_times=header_times)
+                    final_ts = explicit_ts or timeslot
+
+                    entry = TimetableEntry(
+                        weekday=weekday,
+                        timeslot=final_ts,
+                        activity=activity_text,
+                        confidence_score=0.85  # Table-based extraction is typically reliable
+                    )
+                    entries.append(entry)
         
         return entries
     
@@ -286,27 +590,40 @@ class TimetableParser:
                     weekdays.append((idx, weekday))
         
         # Parse each row (each row is a time slot or activity)
+        # Build a list of reference times from the first column if possible
+        reference_times: List[TimeSlot] = []
+        for r in range(1, len(content)):
+            if content[r] and len(content[r]) > 0:
+                ts = self.parse_timeslot(content[r][0])
+                if ts:
+                    reference_times.append(ts)
+
         for row_idx in range(1, len(content)):
             row = content[row_idx]
-            
+
             # Try to extract time from first column
             timeslot = None
             if row:
-                timeslot = self.parse_timeslot(row[0])
-            
+                timeslot = self.parse_timeslot(row[0], reference_times=reference_times)
+
             # Extract activities for each day
             for col_idx, weekday in weekdays:
                 if col_idx < len(row):
                     activity_text = row[col_idx].strip()
-                    
-                    if activity_text and activity_text.lower() not in ['', 'nan', 'none']:
-                        entry = TimetableEntry(
-                            weekday=weekday,
-                            timeslot=timeslot,
-                            activity=activity_text,
-                            confidence_score=0.85
-                        )
-                        entries.append(entry)
+
+                    if not activity_text or activity_text.lower() in ['', 'nan', 'none']:
+                        continue
+
+                    explicit_ts = self.parse_timeslot(activity_text, reference_times=reference_times)
+                    final_ts = explicit_ts or timeslot
+
+                    entry = TimetableEntry(
+                        weekday=weekday,
+                        timeslot=final_ts,
+                        activity=activity_text,
+                        confidence_score=0.85
+                    )
+                    entries.append(entry)
         
         return entries
     
@@ -405,7 +722,7 @@ class TimetableParser:
         
         return entries
     
-    def parse_timeslot(self, text: str) -> Optional[TimeSlot]:
+    def parse_timeslot(self, text: str, reference_times: Optional[List[TimeSlot]] = None) -> Optional[TimeSlot]:
         """
         Parse timeslot from text.
         
@@ -423,32 +740,119 @@ class TimetableParser:
         if not text:
             return None
         
-        # Try range pattern first
-        range_match = self.time_range_pattern.search(text)
-        if range_match:
-            start_h, start_m, end_h, end_m = range_match.groups()
-            
+        # Find all time-like tokens in the text
+        matches = list(self._time_re.finditer(text))
+
+        def _map_hour(h: int, ampm: Optional[str]) -> int:
+            # Map 12-hour hour and am/pm to 24-hour
+            if ampm:
+                am = ampm.lower() == 'am'
+                pm = ampm.lower() == 'pm'
+                if am and h == 12:
+                    return 0
+                if pm and h < 12:
+                    return h + 12
+                return h % 24
+            # No am/pm provided — we'll infer later
+            return h
+
+        times = []
+        for m in matches:
+            h = int(m.group(1))
+            mm = int(m.group(2)) if m.group(2) else 0
+            ampm = m.group(3)
+            times.append({'hour': h, 'minute': mm, 'ampm': ampm})
+
+        if len(times) >= 2:
+            # Treat first two as a range
+            s = times[0]
+            e = times[1]
+
+            # If either has am/pm, propagate to the other if missing
+            if s['ampm'] and not e['ampm']:
+                e['ampm'] = s['ampm']
+            if e['ampm'] and not s['ampm']:
+                s['ampm'] = e['ampm']
+
+            # If still missing am/pm and reference times provided, try to infer
+            def _resolve(t, refs):
+                if t['ampm']:
+                    return _map_hour(t['hour'], t['ampm']), t['minute']
+                # Try to infer using reference_times (compare nearest hour)
+                if refs:
+                    cand_ampm = None
+                    # Try both mappings and pick closer to any reference start
+                    best = None
+                    best_diff = None
+                    for add12 in (0, 12):
+                        mapped = (t['hour'] % 12) + add12
+                        for ref in refs:
+                            if ref and ref.start_time:
+                                diff = abs(mapped - ref.start_time.hour)
+                                if best_diff is None or diff < best_diff:
+                                    best_diff = diff
+                                    best = (mapped, t['minute'])
+                    if best:
+                        return best
+                # Fallback heuristic: morning hours 7-11 -> AM, else PM (12->12)
+                if 7 <= t['hour'] <= 11:
+                    return t['hour'] % 24, t['minute']
+                if t['hour'] == 12:
+                    return 12, t['minute']
+                return (t['hour'] + 12) % 24, t['minute']
+
             try:
-                start_time = time(int(start_h), int(start_m))
-                end_time = time(int(end_h), int(end_m))
-                
-                return TimeSlot(
-                    start_time=start_time,
-                    end_time=end_time,
-                    raw_text=text.strip()
-                )
-            except (ValueError, TypeError):
+                sh, sm = _resolve(s, reference_times)
+                eh, em = _resolve(e, reference_times)
+                start_time = time(int(sh), int(sm))
+                end_time = time(int(eh), int(em))
+                return TimeSlot(start_time=start_time, end_time=end_time, raw_text=text.strip())
+            except Exception:
                 pass
-        
-        # Try single time pattern
-        time_match = self.time_pattern.search(text)
-        if time_match:
-            hour, minute = time_match.groups()
-            
+
+        if len(times) == 1:
+            t = times[0]
+            # resolve hour
+            if t['ampm']:
+                h24 = _map_hour(t['hour'], t['ampm'])
+            else:
+                # infer from reference_times or heuristics
+                if reference_times:
+                    # pick closest reference hour
+                    best = None
+                    best_diff = None
+                    for ref in reference_times:
+                        if ref and ref.start_time:
+                            diff = abs(t['hour'] - (ref.start_time.hour % 12))
+                            if best_diff is None or diff < best_diff:
+                                best_diff = diff
+                                best = ref.start_time.hour
+                    if best is not None:
+                        # choose mapping closest to best (either h or h+12)
+                        if abs(t['hour'] - (best % 12)) <= abs((t['hour'] + 12) - best):
+                            h24 = t['hour'] % 24
+                        else:
+                            h24 = (t['hour'] + 12) % 24
+                    else:
+                        # fallback heuristic
+                        if 7 <= t['hour'] <= 11:
+                            h24 = t['hour'] % 24
+                        elif t['hour'] == 12:
+                            h24 = 12
+                        else:
+                            h24 = (t['hour'] + 12) % 24
+                else:
+                    if 7 <= t['hour'] <= 11:
+                        h24 = t['hour'] % 24
+                    elif t['hour'] == 12:
+                        h24 = 12
+                    else:
+                        h24 = (t['hour'] + 12) % 24
+
             try:
-                t = time(int(hour), int(minute))
-                return TimeSlot(start_time=t, raw_text=text.strip())
-            except (ValueError, TypeError):
+                start_time = time(int(h24), int(t['minute']))
+                return TimeSlot(start_time=start_time, raw_text=text.strip())
+            except Exception:
                 pass
         
         # Return raw text if parseable times not found but text looks time-related
@@ -467,9 +871,7 @@ class TimetableParser:
         """Check if text contains time information."""
         if not text or not isinstance(text, str):
             return False
-        return bool(self.time_pattern.search(text) or 
-                   self.time_range_pattern.search(text) or
-                   'am' in text.lower() or 'pm' in text.lower())
+        return bool(self._time_re.search(text) or 'am' in text.lower() or 'pm' in text.lower())
     
     def _is_time_only(self, text: str) -> bool:
         """Check if text is only time (no other content)."""

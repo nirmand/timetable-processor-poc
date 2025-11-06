@@ -4,3 +4,4 @@ src/processor/README.md
 dist/
 build/
 __pycache__/
+src/processor/tests/*
