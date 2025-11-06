@@ -24,7 +24,7 @@ class TimetableParser:
             'register', 'handwriting', 'spelling', 'topic', 'lesson',
             'story', 'comprehension', 'grammar', 'vocabulary',
             'outdoor', 'indoor', 'swimming', 're', 'religious education',
-            'drama', 'dance', 'spanish', 'french', 'pshe'
+            'drama', 'dance', 'spanish', 'french', 'pshe', 'library', 'meeting', 'rwi', 'yoga'
         }
     
     def parse_document(
@@ -80,6 +80,12 @@ class TimetableParser:
             self._normalize_and_fill_defaults(doc)
         except Exception:
             # best-effort only
+            pass
+
+        # Final cleanup for obviously wrong entries
+        try:
+            self._cleanup_anomalies(doc)
+        except Exception:
             pass
 
         return doc
@@ -361,6 +367,48 @@ class TimetableParser:
             return (10_000, 10_000)
 
         doc.entries.sort(key=_sort_key)
+
+    def _cleanup_anomalies(self, doc: TimetableDocument) -> None:
+        """Remove or adjust entries that are clearly spurious.
+
+        Heuristics:
+        - Drop entries starting before 07:30 or ending after 18:00
+        - Drop entries with duration > 4 hours unless the activity is a known block (e.g., 'Trip')
+        - Drop entries whose activity string appears to contain 3+ distinct keywords (likely merged row)
+        """
+        if not doc.entries:
+            return
+
+        def minutes(t: time) -> int:
+            return t.hour * 60 + t.minute
+
+        cleaned: List[TimetableEntry] = []
+        for e in doc.entries:
+            keep = True
+            if e.timeslot and e.timeslot.start_time:
+                st = minutes(e.timeslot.start_time)
+                et = minutes(e.timeslot.end_time) if e.timeslot.end_time else st + 60
+
+                if st < 7 * 60 + 30 or et > 18 * 60:
+                    keep = False
+
+                if keep and (et - st) > 240:
+                    # very long range; allow only for a handful of labels
+                    label = (e.activity or '').lower()
+                    if not any(k in label for k in ('trip', 'sports day', 'inset')):
+                        keep = False
+
+            # Detect merged multi-activity strings (3+ keywords)
+            if keep and e.activity:
+                low = e.activity.lower()
+                hits = sum(1 for k in self.activity_keywords if k in low)
+                if hits >= 3:
+                    keep = False
+
+            if keep:
+                cleaned.append(e)
+
+        doc.entries = cleaned
     def _extract_metadata(
         self, 
         doc: TimetableDocument, 
@@ -1034,6 +1082,17 @@ class TimetableParser:
         norm = re.sub(r'(:\s?)[Oo](?=\b)', lambda m: m.group(1) + '0', norm, flags=re.IGNORECASE)
         norm = re.sub(r'\s+', ' ', norm).strip()
 
+        # If the text doesn't look like a time at all (no separators / am/pm / range), bail early
+        looks_like_time = bool(
+            re.search(r'\b\d{1,2}[:.]\d{2}\b', norm, flags=re.IGNORECASE) or
+            re.search(r'\b\d{1,2}\s*(am|pm)\b', norm, flags=re.IGNORECASE) or
+            re.search(r'\b\d{1,2}(?::\d{2})?\s*(?:-|–|—|to)\s*\d{1,2}(?::\d{2})?\b', norm, flags=re.IGNORECASE)
+        )
+
+        if not looks_like_time and not reference_times:
+            # Avoid interpreting arbitrary numbers (e.g., years "2024", class "2EJ") as times
+            return None
+
         # First attempt: look for explicit ranges like '1:15 - 2:15', '9.30 to 10:15', '1 - 2pm'
         range_re = re.compile(r"(\d{1,2}(?::|\.)?\d{0,2})\s*(?:-|–|—|to)\s*(\d{1,2}(?::|\.)?\d{0,2})(?:\s*(am|pm|AM|PM))?")
         mrange = range_re.search(norm)
@@ -1263,7 +1322,18 @@ class TimetableParser:
         """Check if text contains time information."""
         if not text or not isinstance(text, str):
             return False
-        return bool(self._time_re.search(text) or 'am' in text.lower() or 'pm' in text.lower())
+        t = text.lower()
+        # Strict patterns to avoid matching plain numbers like years or class codes
+        #  - explicit HH:MM or H.MM
+        if re.search(r'\b\d{1,2}[:.]\d{2}\b', t):
+            return True
+        #  - H am/pm
+        if re.search(r'\b\d{1,2}\s*(am|pm)\b', t):
+            return True
+        #  - ranges like 9-10, 9:30-10, 9.30 to 10.15
+        if re.search(r'\b\d{1,2}(?::\d{2})?\s*(?:-|–|—|to)\s*\d{1,2}(?::\d{2})?\b', t):
+            return True
+        return False
     
     def _is_time_only(self, text: str) -> bool:
         """Check if text is only time (no other content)."""

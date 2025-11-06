@@ -133,15 +133,18 @@ def normalize_activity_name(activity: str) -> str:
         # subjects and common abbreviations
         'math': 'Maths',
         'maths con': 'Maths Con',
+        'mathss': 'Maths',
         'pe': 'PE',
         'phys ed': 'PE',
         'physical education': 'PE',
         'comp': 'Computing',
         'computing': 'Computing',
+        'computinguting': 'Computing',
         're': 'RE',
         'religious education': 'RE',
         'pshe': 'PSHE',
         'phse': 'PSHE',
+        'rwi': 'RWI',
         # blocks
         'story time': 'Storytime',
         'storytime': 'Storytime',
@@ -155,6 +158,8 @@ def normalize_activity_name(activity: str) -> str:
         'liibary': 'Library',
         'libray': 'Library',
         'comprehens ion': 'Comprehension',
+        'hens ion': 'hension',
+        'compre hension': 'Comprehension',
         'comprehens\nion': 'Comprehension',
         'assembly\n': 'Assembly ',
     }
