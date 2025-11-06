@@ -7,7 +7,7 @@ An app to process timetables with complex and diverse formats and structures, an
 3. Used PaddleOCR for parsing and extracting as it provides higher accuracy on complex, varied, or real-world images compared to other libraries.
 
 # Known Issues/ Limitations
-1. Parsing and extraction process requires significant improvements as it's giving partially correct data, but isn't accurate in many places. The issue is mostly with the parsing and table detaction logic in Python processor engine.
+1. Parsing and extraction process requires significant improvements as it's giving a very few correct data. The results are not acceptable in quality and accurancy. The issue is with the parsing and table detaction logic written in Python processor engine which needs to be corrected to make the app reliable. But for now, we have a strong foundation and architecture in place with an end-to-end workflow.
 
 # Future considerations
 1. Increasing accuracy of extraction logic, parsing data and output. This requires improvement at this stage.
