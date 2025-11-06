@@ -10,8 +10,10 @@ An app to process timetables with complex and diverse formats and structures, an
 1. Increasing accuracy of extraction logic, parsing data and output. This requires improvement at this stage.
 2. Next.JS (A React framework) + Tailwind and replacing React and Node.JS for Server-side rendering, rich UI, and static site generation.
 3. A new step in workflow to pass OCR output to LLM models (such as, OpenAI models or Gemini models) to leverage more context and trained data as OCR libraries are having certain limitations with some characters or hand-written contents.
-4. CI/ CD pipeline
-5. Using Azure Blob Storage/ AWS S3 for persisting input timetable files
+4. Using Azure Blob Storage/ AWS S3 for persisting input timetable files
+5. OpenAPI Specifications for API documentation
+6. CI/ CD pipeline
 
 # References
 [Architecture](https://github.com/nirmand/timetable-processor-poc/blob/main/architecture.md)
+[Setup](https://github.com/nirmand/timetable-processor-poc/blob/main/setup.md)
