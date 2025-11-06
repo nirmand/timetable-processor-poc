@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import './App.css'
+import CalendarView from './components/CalendarView'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 
@@ -116,27 +117,8 @@ function App() {
           
           {response.activities && response.activities.length > 0 && (
             <div className="activities-section">
-              <h3>Extracted Activities ({response.activities.length})</h3>
-              <table className="activities-table">
-                <thead>
-                  <tr>
-                    <th>Day</th>
-                    <th>Start Time</th>
-                    <th>End Time</th>
-                    <th>Notes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {response.activities.map((activity) => (
-                    <tr key={activity.id}>
-                      <td>{activity.day}</td>
-                      <td>{activity.start_time}</td>
-                      <td>{activity.end_time}</td>
-                      <td>{activity.notes || '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <h3>Timetable ({response.activities.length} activities)</h3>
+              <CalendarView activities={response.activities} />
             </div>
           )}
         </div>

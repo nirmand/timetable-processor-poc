@@ -120,10 +120,11 @@ def main():
                             end_time = ""
 
                     notes = entry.notes if getattr(entry, "notes", None) else None
+                    activity_name = entry.activity if getattr(entry, "activity", None) else None
 
                     ea = ExtractedActivities(
                         source_id=source_id,
-                        activity_id=None,
+                        activity_name=activity_name,
                         day=day,
                         start_time=str(start_time),
                         end_time=str(end_time),
