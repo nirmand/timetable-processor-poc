@@ -90,6 +90,47 @@
 
 ---
 
+## API Endpoints
+
+### 1. Health Check
+```http
+GET /health
+```
+- **Purpose**: Check API server health
+- **Response**: `{ "status": "ok" }`
+
+### 2. Upload Timetable
+```http
+POST /timetable/upload
+Content-Type: multipart/form-data
+
+file: <timetable_image>
+```
+- **Purpose**: Upload and process a new timetable
+- **Input**: Multipart form data with file (PNG, JPG, PDF, DOCX)
+- **Process**: 
+  1. Saves file to disk
+  2. Invokes Python processor to perform parsing using OCR library. 
+  3. Fetches extracted data stored by Python processor in Sqlite database.  
+- **Response**: 
+  ```json
+  {
+    "timetable_source_id": number,
+    "file_path": string,
+    "processed_at": string,
+    "activities": [
+      {
+        "id": number,
+        "day": string,
+        "activity_name": string,
+        "start_time": string,
+        "end_time": string,
+        "notes": string | null
+      }
+    ]
+  }
+  ```
+
 ## Deployment Topology
 
 ```
@@ -137,13 +178,3 @@
 - `MAX_UPLOAD_BYTES`: Max file size (default: 10MB)
 
 **Processor**: Configuration via command-line args (`run.py`)
-
----
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Server health check |
-| `POST` | `/timetable/upload` | Upload timetable file for processing |
-| `GET` | `/timetable/:id` | Retrieve extracted activities |
