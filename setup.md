@@ -71,7 +71,7 @@ No manual database setup is required. Just ensure the `db` directory exists in t
 
 The API will be available at `http://localhost:3000`
 
-## 3. Processor Engine (Python)
+## 4. Processor Engine (Python)
 
 A Python-based engine for timetable processing and OCR.
 
