@@ -130,19 +130,43 @@ def normalize_activity_name(activity: str) -> str:
     
     # Common substitutions
     replacements = {
+        # subjects and common abbreviations
         'math': 'Maths',
+        'maths con': 'Maths Con',
         'pe': 'PE',
         'phys ed': 'PE',
         'physical education': 'PE',
         'comp': 'Computing',
+        'computing': 'Computing',
         're': 'RE',
         'religious education': 'RE',
+        'pshe': 'PSHE',
+        'phse': 'PSHE',
+        # blocks
+        'story time': 'Storytime',
+        'storytime': 'Storytime',
+        'registration & early morning work': 'Registration and Early Morning work',
+        'registration and early morning work': 'Registration and Early Morning work',
+        'break': 'Break',
+        'lunch': 'Lunch',
+        # common OCR typos
+        'engli sh': 'English',
+        'engli\nsh': 'English',
+        'liibary': 'Library',
+        'libray': 'Library',
+        'comprehens ion': 'Comprehension',
+        'comprehens\nion': 'Comprehension',
+        'assembly\n': 'Assembly ',
     }
     
     activity_lower = activity.lower()
     for old, new in replacements.items():
         if old in activity_lower:
             activity = re.sub(old, new, activity, flags=re.IGNORECASE)
+
+    # Trim repeated whitespace and newlines/slashes spacing
+    activity = re.sub(r'\s*[/\n]\s*', ' / ', activity)
+    activity = re.sub(r'\s+', ' ', activity).strip()
     
     return activity.strip()
 

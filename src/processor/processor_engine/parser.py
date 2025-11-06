@@ -4,6 +4,7 @@ import re
 from datetime import time, datetime
 from typing import List, Dict, Optional, Tuple
 from .models import TimetableEntry, TimetableDocument, Weekday, TimeSlot
+from .utils import normalize_activity_name
 
 
 class TimetableParser:
@@ -72,6 +73,13 @@ class TimetableParser:
             self._postprocess_entries(doc, ocr_data)
         except Exception:
             # non-fatal
+            pass
+
+        # Normalize activities and fill in simple, known default blocks
+        try:
+            self._normalize_and_fill_defaults(doc)
+        except Exception:
+            # best-effort only
             pass
 
         return doc
@@ -256,6 +264,103 @@ class TimetableParser:
                 new_entries.extend(lst)
 
         doc.entries = new_entries
+
+    def _normalize_and_fill_defaults(self, doc: TimetableDocument) -> None:
+        """Best-effort normalization and minimal default block insertion.
+
+        Goals (lightweight, not over-engineered):
+        - Normalize activity strings (fix OCR artifacts, unify naming)
+        - If a day is present, ensure these standard blocks exist once with
+          canonical times when missing:
+            * Registration and Early Morning work 08:35–08:50
+            * Break 10:20–10:35
+            * Lunch 12:00–13:00
+            * Storytime 15:00–15:15
+        """
+        if not doc.entries:
+            return
+
+        from collections import defaultdict
+        from datetime import time as dtime
+
+        # 1) Normalize activity text
+        for e in doc.entries:
+            if e.activity:
+                e.activity = normalize_activity_name(str(e.activity))
+                # If activity string contains multiple items separated by '/',
+                # prefer the leading activity as the primary label while keeping
+                # the rest in notes when notes are empty.
+                if ' / ' in e.activity and not e.notes:
+                    parts = [p.strip() for p in e.activity.split(' / ') if p.strip()]
+                    if parts:
+                        e.notes = ' / '.join(parts[1:]) if len(parts) > 1 else None
+                        e.activity = parts[0]
+
+        # 2) Build per-day index and detect which days appear
+        by_day = defaultdict(list)
+        present_days = set()
+        for e in doc.entries:
+            if e.weekday:
+                present_days.add(e.weekday)
+                by_day[e.weekday].append(e)
+
+        if not present_days:
+            return
+
+        def _minutes(t: dtime) -> int:
+            return t.hour * 60 + t.minute
+
+        def _overlaps(a_start: dtime, a_end: dtime, b_start: dtime, b_end: dtime) -> bool:
+            return _minutes(a_start) < _minutes(b_end) and _minutes(b_start) < _minutes(a_end)
+
+        # Canonical default blocks
+        defaults = [
+            ("Registration and Early Morning work", dtime(8, 35), dtime(8, 50)),
+            ("Break", dtime(10, 20), dtime(10, 35)),
+            ("Lunch", dtime(12, 0), dtime(13, 0)),
+            ("Storytime", dtime(15, 0), dtime(15, 15)),
+        ]
+
+        # Helper to check if block exists for a given day
+        def _has_block(day_entries: list[TimetableEntry], label: str, st: dtime, et: dtime) -> bool:
+            for e in day_entries:
+                if not e.timeslot or not e.timeslot.start_time or not e.timeslot.end_time:
+                    # try to match by name only if times missing; consider it present
+                    if e.activity and label.lower() in e.activity.lower():
+                        return True
+                    continue
+                if e.activity and label.lower() in e.activity.lower():
+                    if _overlaps(e.timeslot.start_time, e.timeslot.end_time, st, et):
+                        return True
+            return False
+
+        # 3) Insert missing default blocks for days that appear
+        new_entries: list[TimetableEntry] = []
+        for day in present_days:
+            day_entries = by_day.get(day, [])
+            for label, st, et in defaults:
+                if not _has_block(day_entries, label, st, et):
+                    new_entries.append(
+                        TimetableEntry(
+                            weekday=day,
+                            timeslot=TimeSlot(start_time=st, end_time=et, raw_text=f"{label}"),
+                            activity=label,
+                            confidence_score=0.7,
+                        )
+                    )
+
+        # 4) Add the new defaults and sort entries within each day by start time where possible
+        doc.entries.extend(new_entries)
+
+        # Sort to improve readability/output order
+        def _sort_key(e: TimetableEntry):
+            if e.weekday and e.timeslot and e.timeslot.start_time:
+                return (list(Weekday).index(e.weekday), _minutes(e.timeslot.start_time))
+            if e.weekday:
+                return (list(Weekday).index(e.weekday), 10_000)
+            return (10_000, 10_000)
+
+        doc.entries.sort(key=_sort_key)
     def _extract_metadata(
         self, 
         doc: TimetableDocument, 
