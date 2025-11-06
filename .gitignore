@@ -6,3 +6,6 @@ build/
 __pycache__/
 src/processor/tests/*
 db/timetable.sqlite
+src/timetable-ui/node_modules/*
+src/timetable-api/uploads/*
+src/timetable-ui/.env
