@@ -913,8 +913,122 @@ class TimetableParser:
         if not text:
             return None
         
-        # Find all time-like tokens in the text
-        matches = list(self._time_re.finditer(text))
+        # Pre-normalize text to reduce OCR noise and support a wider range of separators
+        # - normalize various dash characters to '-' so ranges are caught
+        # - convert dots between hour/min to ':' (OCR commonly uses '.' for ':')
+        # - collapse multiple spaces
+        norm = text.replace('\u2013', '-').replace('\u2014', '-').replace('\u2012', '-')
+        norm = re.sub(r'[–—−]', '-', norm)
+        # replace lone dot used as separator (e.g., '9.30') with ':' but avoid replacing decimal dots in numbers
+        norm = re.sub(r'(?<=\d)\.(?=\d{2}\b)', ':', norm)
+        # common OCR mistakes: letter O for zero in minute positions
+        # Python's `re` requires fixed-width lookbehind. The original
+        # pattern used a variable-width lookbehind `(?<=:\s?)` which fails
+        # for some Python versions. Replace using a captured prefix and a
+        # lambda replacement to avoid lookbehind altogether.
+        norm = re.sub(r'(:\s?)[Oo](?=\b)', lambda m: m.group(1) + '0', norm, flags=re.IGNORECASE)
+        norm = re.sub(r'\s+', ' ', norm).strip()
+
+        # First attempt: look for explicit ranges like '1:15 - 2:15', '9.30 to 10:15', '1 - 2pm'
+        range_re = re.compile(r"(\d{1,2}(?::|\.)?\d{0,2})\s*(?:-|–|—|to)\s*(\d{1,2}(?::|\.)?\d{0,2})(?:\s*(am|pm|AM|PM))?")
+        mrange = range_re.search(norm)
+        if mrange:
+            left = mrange.group(1)
+            right = mrange.group(2)
+            trailing_ampm = mrange.group(3)
+
+            # normalize separators to ':' for consistent parsing
+            left = left.replace('.', ':')
+            right = right.replace('.', ':')
+
+            def _split_time_token(tok: str):
+                if ':' in tok:
+                    h, mm = tok.split(':', 1)
+                    mm = mm[:2] if mm else '00'
+                else:
+                    h = tok
+                    mm = '00'
+                return int(re.sub(r'\D', '', h)), int(re.sub(r'\D', '', mm))
+
+            try:
+                lh, lm = _split_time_token(left)
+                rh, rm = _split_time_token(right)
+
+                # prepare am/pm propagation
+                left_ampm = None
+                right_ampm = trailing_ampm
+                # If explicit AM/PM present inside tokens (rare), try to extract
+                inner_left = re.search(r'(am|pm|AM|PM)$', left)
+                inner_right = re.search(r'(am|pm|AM|PM)$', right)
+                if inner_left:
+                    left_ampm = inner_left.group(1)
+                if inner_right:
+                    right_ampm = inner_right.group(1)
+
+                # propagate if only one side has am/pm
+                if left_ampm and not right_ampm:
+                    right_ampm = left_ampm
+                if right_ampm and not left_ampm:
+                    left_ampm = right_ampm
+
+                def _map_hour_local(h: int, ampm: Optional[str]) -> int:
+                    if ampm:
+                        return _map_hour(h, ampm)
+                    return h
+
+                sh = _map_hour_local(lh, left_ampm)
+                eh = _map_hour_local(rh, right_ampm)
+
+                # If still ambiguous (no am/pm), and reference_times exist, choose mapping (h or h+12)
+                if not left_ampm and reference_times:
+                    # pick mapping (h or h+12) that minimizes minute difference to any ref start
+                    def _best_map(h0):
+                        cand1 = h0 % 24
+                        cand2 = (h0 + 12) % 24
+                        best_cand = cand1
+                        best_diff = None
+                        for ref in reference_times:
+                            if not ref or not ref.start_time:
+                                continue
+                            for cand in (cand1, cand2):
+                                diff = abs((cand * 60 + lm) - (ref.start_time.hour * 60 + ref.start_time.minute))
+                                if best_diff is None or diff < best_diff:
+                                    best_diff = diff
+                                    best_cand = cand
+                        return best_cand
+
+                    sh = _best_map(lh)
+
+                if not right_ampm and reference_times:
+                    def _best_map_r(h0):
+                        cand1 = h0 % 24
+                        cand2 = (h0 + 12) % 24
+                        best_cand = cand1
+                        best_diff = None
+                        for ref in reference_times:
+                            if not ref or not ref.start_time:
+                                continue
+                            for cand in (cand1, cand2):
+                                diff = abs((cand * 60 + rm) - (ref.start_time.hour * 60 + ref.start_time.minute))
+                                if best_diff is None or diff < best_diff:
+                                    best_diff = diff
+                                    best_cand = cand
+                        return best_cand
+                    eh = _best_map_r(rh)
+
+                start_time = time(int(sh), int(lm))
+                end_time = time(int(eh), int(rm))
+                # ensure end > start, otherwise if end <= start assume +1 hour
+                if (end_time.hour * 60 + end_time.minute) <= (start_time.hour * 60 + start_time.minute):
+                    end_time = time((start_time.hour + 1) % 24, start_time.minute)
+
+                return TimeSlot(start_time=start_time, end_time=end_time, raw_text=text.strip())
+            except Exception:
+                # fall through to token-based parsing
+                pass
+
+        # Find all time-like tokens in the (normalized) text
+        matches = list(self._time_re.finditer(norm))
 
         def _map_hour(h: int, ampm: Optional[str]) -> int:
             # Map 12-hour hour and am/pm to 24-hour
@@ -951,22 +1065,22 @@ class TimetableParser:
             def _resolve(t, refs):
                 if t['ampm']:
                     return _map_hour(t['hour'], t['ampm']), t['minute']
-                # Try to infer using reference_times (compare nearest hour)
+                # Try to infer using reference_times (compare nearest minute)
                 if refs:
-                    cand_ampm = None
-                    # Try both mappings and pick closer to any reference start
-                    best = None
+                    best_choice = None
                     best_diff = None
                     for add12 in (0, 12):
-                        mapped = (t['hour'] % 12) + add12
+                        cand = (t['hour'] % 12) + add12
+                        cand_minutes = cand * 60 + t['minute']
                         for ref in refs:
                             if ref and ref.start_time:
-                                diff = abs(mapped - ref.start_time.hour)
+                                ref_minutes = ref.start_time.hour * 60 + ref.start_time.minute
+                                diff = abs(cand_minutes - ref_minutes)
                                 if best_diff is None or diff < best_diff:
                                     best_diff = diff
-                                    best = (mapped, t['minute'])
-                    if best:
-                        return best
+                                    best_choice = (cand, t['minute'])
+                    if best_choice:
+                        return best_choice
                 # Fallback heuristic: morning hours 7-11 -> AM, else PM (12->12)
                 if 7 <= t['hour'] <= 11:
                     return t['hour'] % 24, t['minute']

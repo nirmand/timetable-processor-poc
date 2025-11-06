@@ -63,6 +63,21 @@ function App() {
       }
 
       const data = await res.json()
+      // Normalize activity field names: support both 'activity_name' (DB) and
+      // legacy 'activity' (processor JSON) so the UI always has activity_name.
+      if (data && Array.isArray(data.activities)) {
+        console.log(data.activities);
+        data.activities = data.activities.map((a: any) => ({
+          id: a.id,
+          day: a.day,
+          start_time: a.start_time,
+          end_time: a.end_time,
+          notes: a.notes ?? null,
+          // prefer activity_name from DB, fallback to processor 'activity' key,
+          // then fallback to empty string to avoid rendering null/undefined
+          activity_name: a.activity_name ?? a.activity ?? ''
+        }))
+      }
       setResponse(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred during upload')

@@ -2,7 +2,9 @@ interface Activity {
   id: number
   day: string
   start_time: string
-  activity_name: string
+  activity_name?: string
+  // Some processor outputs use 'activity' instead of 'activity_name'
+  activity?: string
   end_time: string
   notes: string | null
 }
@@ -87,7 +89,7 @@ export default function CalendarView({ activities }: CalendarViewProps) {
                     <div className="activities-in-slot">
                       {slotActivities.map((activity) => (
                         <div key={activity.id} className="activity-item">
-                          <div className="activity-name">{activity.activity_name}</div>
+                          <div className="activity-name">{activity.activity_name || activity.activity || ''}</div>
                           <div className="activity-time">
                             {activity.start_time} - {activity.end_time}
                           </div>
