@@ -19,13 +19,6 @@ class TimetableSource(Base):
     file_path = Column(String(500), nullable=False, unique=True)
     processed_at = Column(DateTime, nullable=True)
 
-class TimeslotActivities(Base):
-    """Represents the vocabulary of events/ activities."""
-    __tablename__ = "timeslot_activities"
-
-    id = Column(Integer, primary_key=True)
-    activity_name = Column(String(100), nullable=False, unique=True)
-
 
 class ExtractedActivities(Base):
     """Represents a single extracted row/cell from the timetable."""
@@ -33,7 +26,7 @@ class ExtractedActivities(Base):
 
     id = Column(Integer, primary_key=True)
     source_id = Column(Integer, ForeignKey("timetable_sources.id"), nullable=False)
-    activity_id = Column(Integer, ForeignKey("timeslot_activities.id"), nullable=True)
+    activity_name = Column(String(500), nullable=True)
     day = Column(String(50), nullable=False)
     start_time = Column(String(100), nullable=False)
     end_time = Column(String(100), nullable=False)

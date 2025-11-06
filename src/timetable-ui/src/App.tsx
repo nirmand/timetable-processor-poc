@@ -11,6 +11,7 @@ interface TimetableResponse {
     id: number
     day: string
     start_time: string
+    activity_name: string
     end_time: string
     notes: string | null
   }>
